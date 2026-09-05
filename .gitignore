@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.dump
+*.pem
+*.key
+playwright-report/
+test-results/
+*.log
+.runtime/
+.cache/
+.pnpm-store/

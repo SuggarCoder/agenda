@@ -1,0 +1,126 @@
+name: agenda
+
+x-api: &api
+  image: agenda-api:local
+  build:
+    context: .
+    target: backend
+  environment:
+    NODE_ENV: production
+    HOST: 0.0.0.0
+    PORT: 3000
+    APP_ORIGIN: https://${DOMAIN:?Set DOMAIN in .env}
+    PGHOST: postgres
+    PGPORT: 5432
+    PGDATABASE: ${POSTGRES_DB:-agenda}
+    PGUSER: ${POSTGRES_USER:-agenda}
+    PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+  networks: [private]
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agenda}
+      POSTGRES_USER: ${POSTGRES_USER:-agenda}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [private]
+
+  migrate:
+    <<: *api
+    command: [node, dist/migrate.js]
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    <<: *api
+    restart: unless-stopped
+    init: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  frontend:
+    image: agenda-web:local
+    build:
+      context: .
+      target: frontend
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1/healthz]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [private]
+
+  nginx:
+    image: agenda-nginx:local
+    build: ./deploy/nginx
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - '${HTTP_PORT:-80}:80'
+      - '${HTTPS_PORT:-443}:443'
+    volumes:
+      - letsencrypt:/etc/letsencrypt:ro
+      - acme_webroot:/var/www/certbot:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1/healthz]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [private, public]
+
+  certbot:
+    image: certbot/certbot:v5.8.0
+    restart: unless-stopped
+    entrypoint: [/bin/sh, /opt/agenda/certbot.sh]
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL in .env}
+    volumes:
+      - ./deploy/certbot.sh:/opt/agenda/certbot.sh:ro
+      - letsencrypt:/etc/letsencrypt
+      - acme_webroot:/var/www/certbot
+    depends_on:
+      nginx:
+        condition: service_healthy
+    networks: [public]
+
+volumes:
+  postgres_data:
+  letsencrypt:
+  acme_webroot:
+
+networks:
+  private:
+    internal: true
+  public:

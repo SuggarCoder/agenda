@@ -1,0 +1,22 @@
+{
+  "name": "@agenda/web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agenda/shared": "workspace:*",
+    "solid-js": "^1.9.9",
+    "@solidjs/router": "^0.15.3",
+    "lucide-solid": "^0.468.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0",
+    "vite-plugin-solid": "^2.11.8",
+    "unocss": "^66.5.0"
+  }
+}

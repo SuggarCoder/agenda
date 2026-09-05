@@ -1,0 +1,17 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+    server_tokens off;
+    location = /healthz { access_log off; return 200 "ok\n"; }
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+    location / {
+        default_type text/plain;
+        add_header Retry-After 60 always;
+        return 503 "HTTPS certificate is being prepared. Please retry shortly.\n";
+    }
+}
