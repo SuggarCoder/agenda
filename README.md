@@ -1,4 +1,4 @@
-# 青禾 · 学员考勤系统
+# 麦卡麦 · 学员考勤系统
 
 基于 SolidJS、Vite、TypeScript、UnoCSS、Fastify、Zod、Kysely 和 PostgreSQL 的学员考勤系统。PostgreSQL 是唯一业务事实源；登录会话、考勤和审计均落库，不依赖 Redis。
 

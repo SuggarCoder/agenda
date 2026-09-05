@@ -40,7 +40,7 @@ export function Brand() {
       </span>
       <div>
         <strong>
-          青禾<span>考勤</span>
+          麦卡麦<span>考勤</span>
         </strong>
         <small>QINGHE ATTENDANCE</small>
       </div>
@@ -227,7 +227,7 @@ export function Shell(props: ParentProps) {
               </ErrorBoundary>
             </main>
             <footer class="page-footer">
-              <span>青禾 · 学员考勤</span>
+              <span>麦卡麦 · 学员考勤</span>
               <span>认真记录，陪伴成长</span>
             </footer>
           </div>
