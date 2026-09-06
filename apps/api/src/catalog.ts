@@ -373,7 +373,12 @@ export function registerCatalog(app: FastifyInstance, db: Db) {
             .where('role', '!=', 'admin')
             .orderBy('name')
             .execute()
-        : [];
+        : (
+            await sql<Row>`SELECT u.id,u.name,u.role,u.active FROM users u
+            WHERE u.role<>'admin' AND EXISTS(
+              SELECT 1 FROM class_teachers ct JOIN classes c ON c.id=ct.class_id
+              WHERE ct.user_id=u.id AND ${classScope(user)}) ORDER BY u.name,u.id`.execute(db)
+          ).rows;
     return result;
   });
 }

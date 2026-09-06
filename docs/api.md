@@ -33,7 +33,7 @@
 - `PATCH /{resource}/:id`：更新完整可编辑字段。教师可编辑字段仅为 `name, phone, active`。
 - `POST /{resource}/:id/archive`：归档校区、课程、学员或班级。账号使用 PATCH 禁用。
 - `POST /users/:id/reset-password`：重置教师密码，要求下次改密并撤销其现有会话。
-- `GET /lookups`：返回权限范围内的校区、课程、班级、学员和教师选项；保留归档标记以支持历史查询。
+- `GET /lookups`：返回权限范围内的校区、课程、班级、学员和教师选项；保留归档标记以支持历史查询。管理员获得全部教师选项，教师仅获得其可见班级当前关联教师的 `id, name, role, active`。
 
 ## 班级关系
 
@@ -63,16 +63,21 @@
 
 ## 报表与审计
 
-| 方法与路径                    | 返回                                                          |
-| ----------------------------- | ------------------------------------------------------------- |
-| `GET /reports/attendance`     | 汇总 `summary`、按班级分组 `groups`、分页明细 `items`         |
-| `GET /reports/attendance.csv` | 当前筛选范围内全部逐人明细，UTF-8 BOM CSV                     |
-| `GET /weekly-warnings`        | 当前自然周边界、服务器时间及分页预警名单                      |
-| `GET /weekly-warnings.csv`    | 当前范围的周预警名单                                          |
-| `GET /audit-logs`             | 权限范围内的只读分页审计记录                                  |
-| `GET /dashboard`              | 在读学员、班级、待处理时段、周预警、近 7 日走势和最近考勤动态 |
+| 方法与路径                             | 返回                                                                               |
+| -------------------------------------- | ---------------------------------------------------------------------------------- |
+| `GET /reports/attendance`              | 汇总 `summary`、按班级分组 `groups`、按教师及角色分组 `teachers`、分页明细 `items` |
+| `GET /reports/attendance.csv`          | 当前筛选范围内全部逐人明细，UTF-8 BOM CSV                                          |
+| `GET /reports/attendance/teachers.csv` | 当前筛选范围内全部教师汇总，UTF-8 BOM CSV                                          |
+| `GET /weekly-warnings`                 | 当前自然周边界、服务器时间及分页预警名单                                           |
+| `GET /weekly-warnings.csv`             | 当前范围的周预警名单                                                               |
+| `GET /audit-logs`                      | 权限范围内的只读分页审计记录                                                       |
+| `GET /dashboard`                       | 在读学员、班级、待处理时段、周预警、近 7 日走势和最近考勤动态                      |
 
-报表指标：`expected, present, absent, unrecorded, students, sessions, attendance_rate`。`attendance_rate` 是百分比数值，应到为零时为 `null`。CSV 复用数据权限，并对电子表格公式开头的文本进行转义。
+报表指标：`expected, present, absent, unrecorded, students, sessions, attendance_rate, recording_rate`。`attendance_rate` 为实到／应到，`recording_rate` 为（实到 + 缺勤）／应到；两者是保留一位小数的百分比数值，应到为零时为 `null`。CSV 复用数据权限，并对电子表格公式开头的文本进行转义。
+
+`teachers` 每行额外包含 `teacher_id, teacher_name, teacher_role, classes`，分别为教师 ID、姓名、班级分配角色和有应到记录的班级数；汇总不受明细分页影响。教师归属使用当前 `class_teachers` 分配，与考勤录入人无关，换老师后历史记录归属现任老师；仅返回筛选范围内有应到记录的分组。学员跨班去重，同班可分别计入班主任和任课老师，教师行相加不等于全局总计。没有分配教师的班级仍计入不限定教师的全局汇总。所有教师分组只包含当前账号有权查看的班级。
+
+明细及明细 CSV 包含当前班主任和任课老师姓名（`homeroom_name, subject_name`）。两种 CSV 均按相同筛选导出全部记录，不受 `page, page_size` 影响。
 
 列表返回格式：
 
@@ -87,6 +92,7 @@
 - `campus_id, course_id, class_id`：班级、时段、报表、周预警和审计范围筛选；省略校区表示全部可见校区。
 - `from, to`：北京时间日期 `YYYY-MM-DD`，包含所选日期全天；考勤按时段开始时间筛选，审计按操作时间筛选。周预警固定当前周，不使用日期范围。
 - `student_id`：报表及审计筛选；`actor_id`：审计操作者筛选。
+- `teacher_id, teacher_role`：仅用于考勤报表及其两种 CSV；按同一条当前班级教师关联匹配。角色为 `homeroom_teacher / subject_teacher`，可独立筛选角色或指定教师，并与日期、校区、课程、班级、学员和搜索条件取交集。
 - `state`：时段筛选，`upcoming / pending / partial / complete / todo`；`todo` 表示待录入与部分录入的合并视图。
 - `include_archived=true`：基础资料列表包含已归档记录。
 

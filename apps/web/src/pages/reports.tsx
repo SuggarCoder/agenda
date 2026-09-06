@@ -1,9 +1,19 @@
-import { createEffect, createResource, createSignal, Show } from 'solid-js';
+import { createEffect, createResource, createSignal, For, Show } from 'solid-js';
 import { A, useSearchParams } from '@solidjs/router';
 import { Download, Bell, Info, ArrowRight, History } from 'lucide-solid';
 import type { Page } from '@agenda/shared';
+import { roleLabels } from '@agenda/shared';
 import { api, queryString, dateTime, fullDateTime, dateKey, download, message } from '../api';
-import type { Lookups, Query, ReportRow, ReportGroup, Measures, Warning, Audit } from '../types';
+import type {
+  Lookups,
+  Query,
+  ReportRow,
+  ReportGroup,
+  TeacherReportGroup,
+  Measures,
+  Warning,
+  Audit,
+} from '../types';
 import {
   PageHeading,
   Filters,
@@ -36,6 +46,50 @@ function useExport() {
     },
   };
 }
+const rate = (value: number | null) => (value === null ? '—' : `${value}%`);
+
+function TeacherSummary(props: {
+  rows: TeacherReportGroup[];
+  onDetail: (teacher: TeacherReportGroup) => void;
+  busy: boolean;
+}) {
+  return (
+    <Table
+      rows={props.rows}
+      columns={[
+        {
+          title: '教师 / 角色',
+          render: (r) => (
+            <div class="cell-stack">
+              <strong>{r.teacher_name}</strong>
+              <small>{roleLabels[r.teacher_role]}</small>
+            </div>
+          ),
+        },
+        { title: '班级数', render: (r) => <span>{r.classes}</span> },
+        { title: '学员数（去重）', render: (r) => <span>{r.students}</span> },
+        { title: '时段数', render: (r) => <span>{r.sessions}</span> },
+        { title: '应到人次', render: (r) => <b>{r.expected}</b> },
+        { title: '实到人次', render: (r) => <b class="green-text">{r.present}</b> },
+        { title: '缺勤人次', render: (r) => <span class="red-text">{r.absent}</span> },
+        { title: '未录入人次', render: (r) => <span class="amber-text">{r.unrecorded}</span> },
+        { title: '出勤率', render: (r) => <Badge tone="green">{rate(r.attendance_rate)}</Badge> },
+        { title: '录入完成率', render: (r) => <span>{rate(r.recording_rate)}</span> },
+        {
+          title: '操作',
+          render: (r) => (
+            <button class="text-btn" disabled={props.busy} onClick={() => props.onDetail(r)}>
+              查看学员明细
+            </button>
+          ),
+        },
+      ]}
+      emptyTitle="当前范围内暂无教师考勤汇总"
+      emptyDescription="仅汇总已分配教师且有应到学员的已结束时段，请检查教师分配或调整筛选条件。"
+    />
+  );
+}
+
 export function Reports() {
   const [query, setQuery] = createSignal<Query>({
     page: 1,
@@ -47,22 +101,39 @@ export function Reports() {
   const [data, { refetch }] = createResource(
     () => queryString(query()),
     (q) =>
-      api<Page<ReportRow> & { summary: Measures; groups: ReportGroup[] }>(
-        `/reports/attendance?${q}`,
-      ),
+      api<
+        Page<ReportRow> & {
+          summary: Measures;
+          groups: ReportGroup[];
+          teachers: TeacherReportGroup[];
+        }
+      >(`/reports/attendance?${q}`),
   );
-  const [tab, setTab] = createSignal<'summary' | 'detail'>('summary');
+  const [tab, setTab] = createSignal<'summary' | 'detail' | 'teachers'>('summary');
   const exporter = useExport();
   return (
     <>
       <PageHeading
         eyebrow="数据与记录"
         title="考勤报表"
-        description="从校区到每一位学员，清晰查看出勤情况。"
+        description="按班级、班主任或任课老师查看学员考勤，了解出勤与录入管理情况。"
       >
         <button
+          class="btn secondary"
+          disabled={exporter.busy() || data.loading || !!data.error}
+          onClick={() =>
+            exporter.run(
+              `/reports/attendance/teachers.csv?${queryString(query())}`,
+              `教师考勤汇总_${dateKey()}.csv`,
+            )
+          }
+        >
+          <Download size={17} />
+          导出教师汇总
+        </button>
+        <button
           class="btn primary"
-          disabled={exporter.busy()}
+          disabled={exporter.busy() || data.loading || !!data.error}
           onClick={() =>
             exporter.run(
               `/reports/attendance.csv?${queryString(query())}`,
@@ -77,6 +148,7 @@ export function Reports() {
         <Info size={17} />
         <span>
           仅统计已结束时段，按上课开始日期归属。出勤率 = 实到人次 ÷ 应到人次；未录入单列，不算缺勤。
+          录入完成率 =（实到 + 缺勤）÷ 应到人次。
         </span>
       </div>
       <section class="panel report-filters">
@@ -85,8 +157,50 @@ export function Reports() {
           set={(patch) => setQuery((q) => ({ ...q, ...patch, page: 1 }))}
           lookups={lookups()}
           dates
-        />
+        >
+          <select
+            aria-label="教师角色筛选"
+            value={query().teacher_role ?? ''}
+            onChange={(e) =>
+              setQuery((q) => ({
+                ...q,
+                teacher_role: e.currentTarget.value,
+                teacher_id: '',
+                page: 1,
+              }))
+            }
+          >
+            <option value="">全部教师角色</option>
+            <option value="homeroom_teacher">班主任</option>
+            <option value="subject_teacher">任课老师</option>
+          </select>
+          <select
+            aria-label="归属教师筛选"
+            value={query().teacher_id ?? ''}
+            onChange={(e) =>
+              setQuery((q) => ({ ...q, teacher_id: e.currentTarget.value, page: 1 }))
+            }
+          >
+            <option value="">全部教师</option>
+            <For
+              each={lookups()?.teachers.filter(
+                (t) => !query().teacher_role || t.role === query().teacher_role,
+              )}
+            >
+              {(t) => (
+                <option value={t.id}>
+                  {t.name} · {roleLabels[t.role!]}
+                  {t.active === false ? '（已停用）' : ''}
+                </option>
+              )}
+            </For>
+          </select>
+        </Filters>
       </section>
+      <p class="attendance-footnote">
+        <Info size={14} />
+        教师归属按当前班级分配，换老师后历史考勤随班级归属现任老师。仅统计你有权查看的班级；同一班级分别计入班主任和任课老师，教师行之间不可相加作为总计。学员数跨班去重，人次按学员与时段计算。
+      </p>
       <Show when={data.error || lookups.error}>
         <ErrorBox error={data.error || lookups.error} retry={refetch} />
       </Show>
@@ -123,6 +237,11 @@ export function Reports() {
                 </strong>
                 <small>按应到人次计算</small>
               </div>
+              <div>
+                <span>录入完成率</span>
+                <strong>{rate(d().summary.recording_rate)}</strong>
+                <small>已录入人次 ÷ 应到人次</small>
+              </div>
             </div>
             <section class="panel">
               <div class="tabs">
@@ -135,99 +254,137 @@ export function Reports() {
                 <button classList={{ active: tab() === 'detail' }} onClick={() => setTab('detail')}>
                   逐人明细<span>{d().total}</span>
                 </button>
+                <button
+                  classList={{ active: tab() === 'teachers' }}
+                  onClick={() => setTab('teachers')}
+                >
+                  教师汇总<span>{d().teachers.length}</span>
+                </button>
                 <span class="tabs-note">{query().campus_id ? '单校区统计' : '全部校区汇总'}</span>
               </div>
-              <Show
-                when={tab() === 'summary'}
-                fallback={
-                  <>
-                    <Table
-                      rows={d().items}
-                      columns={[
-                        {
-                          title: '学员',
-                          render: (r) => (
-                            <div class="cell-stack">
-                              <strong>{r.student_name}</strong>
-                              <small>{r.phone}</small>
-                            </div>
-                          ),
-                        },
-                        {
-                          title: '班级 / 校区',
-                          render: (r) => (
-                            <div class="cell-stack">
-                              <strong>{r.class_name}</strong>
-                              <small>
-                                {r.campus_name} · {r.course_name}
-                              </small>
-                            </div>
-                          ),
-                        },
-                        {
-                          title: '上课时间',
-                          render: (r) => (
-                            <div class="cell-stack">
-                              <span>{dateTime(r.starts_at)}</span>
-                              <small>至 {dateTime(r.ends_at)}</small>
-                            </div>
-                          ),
-                        },
-                        { title: '考勤', render: (r) => <StatusBadge status={r.status} /> },
-                        {
-                          title: '最后修改',
-                          render: (r) => (
-                            <div class="cell-stack">
-                              <span>{r.updated_by_name ?? '—'}</span>
-                              <small>{dateTime(r.updated_at)}</small>
-                            </div>
-                          ),
-                        },
-                      ]}
-                      emptyTitle="暂无考勤明细"
-                    />
-                    <Pager
-                      page={Number(query().page)}
-                      total={d().total}
-                      onChange={(page) => setQuery((q) => ({ ...q, page }))}
-                    />
-                  </>
-                }
-              >
-                <Table
-                  rows={d().groups}
-                  columns={[
-                    {
-                      title: '班级 / 课程',
-                      render: (r) => (
-                        <div class="cell-stack">
-                          <A class="table-link" href={`/classes/${r.class_id}`}>
-                            {r.class_name}
-                          </A>
-                          <small>{r.course_name}</small>
-                        </div>
-                      ),
-                    },
-                    { title: '校区', render: (r) => <span>{r.campus_name}</span> },
-                    { title: '应到', render: (r) => <b>{r.expected}</b> },
-                    { title: '实到', render: (r) => <b class="green-text">{r.present}</b> },
-                    { title: '缺勤', render: (r) => <span class="red-text">{r.absent}</span> },
-                    {
-                      title: '未录入',
-                      render: (r) => <span class="amber-text">{r.unrecorded}</span>,
-                    },
-                    {
-                      title: '出勤率',
-                      render: (r) => (
-                        <Badge tone="green">
-                          {r.attendance_rate === null ? '—' : `${r.attendance_rate}%`}
-                        </Badge>
-                      ),
-                    },
-                  ]}
-                  emptyTitle="当前范围内没有已结束的考勤时段"
-                  emptyDescription="调整日期或筛选条件后再试。"
+              <Show when={data.loading}>
+                <div class="info-strip">
+                  <Spinner />
+                  正在更新报表…
+                </div>
+              </Show>
+              <Show when={tab() === 'teachers'}>
+                <TeacherSummary
+                  rows={d().teachers}
+                  busy={data.loading || !!data.error}
+                  onDetail={(teacher) => {
+                    setQuery((q) => ({
+                      ...q,
+                      teacher_id: teacher.teacher_id,
+                      teacher_role: teacher.teacher_role,
+                      page: 1,
+                    }));
+                    setTab('detail');
+                  }}
                 />
+              </Show>
+              <Show when={tab() !== 'teachers'}>
+                <Show
+                  when={tab() === 'summary'}
+                  fallback={
+                    <>
+                      <Table
+                        rows={d().items}
+                        columns={[
+                          {
+                            title: '学员',
+                            render: (r) => (
+                              <div class="cell-stack">
+                                <strong>{r.student_name}</strong>
+                                <small>{r.phone}</small>
+                              </div>
+                            ),
+                          },
+                          {
+                            title: '班级 / 校区',
+                            render: (r) => (
+                              <div class="cell-stack">
+                                <strong>{r.class_name}</strong>
+                                <small>
+                                  {r.campus_name} · {r.course_name}
+                                </small>
+                              </div>
+                            ),
+                          },
+                          {
+                            title: '上课时间',
+                            render: (r) => (
+                              <div class="cell-stack">
+                                <span>{dateTime(r.starts_at)}</span>
+                                <small>至 {dateTime(r.ends_at)}</small>
+                              </div>
+                            ),
+                          },
+                          {
+                            title: '当前归属教师',
+                            render: (r) => (
+                              <div class="cell-stack">
+                                <span>班主任：{r.homeroom_name ?? '未分配'}</span>
+                                <small>任课老师：{r.subject_name ?? '未分配'}</small>
+                              </div>
+                            ),
+                          },
+                          { title: '考勤', render: (r) => <StatusBadge status={r.status} /> },
+                          {
+                            title: '最后修改',
+                            render: (r) => (
+                              <div class="cell-stack">
+                                <span>{r.updated_by_name ?? '—'}</span>
+                                <small>{dateTime(r.updated_at)}</small>
+                              </div>
+                            ),
+                          },
+                        ]}
+                        emptyTitle="暂无考勤明细"
+                      />
+                      <Pager
+                        page={Number(query().page)}
+                        total={d().total}
+                        onChange={(page) => setQuery((q) => ({ ...q, page }))}
+                      />
+                    </>
+                  }
+                >
+                  <Table
+                    rows={d().groups}
+                    columns={[
+                      {
+                        title: '班级 / 课程',
+                        render: (r) => (
+                          <div class="cell-stack">
+                            <A class="table-link" href={`/classes/${r.class_id}`}>
+                              {r.class_name}
+                            </A>
+                            <small>{r.course_name}</small>
+                          </div>
+                        ),
+                      },
+                      { title: '校区', render: (r) => <span>{r.campus_name}</span> },
+                      { title: '应到', render: (r) => <b>{r.expected}</b> },
+                      { title: '实到', render: (r) => <b class="green-text">{r.present}</b> },
+                      { title: '缺勤', render: (r) => <span class="red-text">{r.absent}</span> },
+                      {
+                        title: '未录入',
+                        render: (r) => <span class="amber-text">{r.unrecorded}</span>,
+                      },
+                      {
+                        title: '出勤率',
+                        render: (r) => (
+                          <Badge tone="green">
+                            {r.attendance_rate === null ? '—' : `${r.attendance_rate}%`}
+                          </Badge>
+                        ),
+                      },
+                    ]}
+                    emptyTitle="当前范围内没有已结束的考勤时段"
+                    emptyDescription="调整日期或筛选条件后再试。"
+                  />
+                </Show>
               </Show>
             </section>
           </>

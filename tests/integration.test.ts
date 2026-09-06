@@ -440,6 +440,182 @@ test('报表仅统计已结束时段，明确区分缺勤与未录入，导出�
   assert.ok(csv(['name'], [['a"b']]).includes('a""b'));
   assert.equal((await request('GET', '/reports/attendance?from=2026-02-30')).statusCode, 400);
 });
+test('教师报表跨班去重、按角色归属、筛选导出和权限一致，换老师后按当前分配统计', async () => {
+  const reportCourse = await ok('POST', '/courses', { name: `教师考核${tag}` });
+  const classes = [];
+  for (const [i, campus] of [campus1, campus2, campus1].entries()) {
+    const cl = await ok('POST', '/classes', {
+      name: `考核班${i}-${tag}`,
+      campus_id: campus.id,
+      course_id: reportCourse.id,
+    });
+    classes.push(cl);
+    if (i < 2) {
+      await ok('PUT', `/classes/${cl.id}/teachers`, { role: 'homeroom_teacher', user_id: home.id });
+      await ok('PUT', `/classes/${cl.id}/teachers`, {
+        role: 'subject_teacher',
+        user_id: subject.id,
+      });
+    }
+  }
+  const students = [];
+  for (let i = 0; i < 3; i++)
+    students.push(
+      await ok('POST', '/students', {
+        name: `考核学员${i}-${tag}`,
+        phone: '13800000000',
+        guardian_name: '监护人',
+        guardian_relation: 'mother',
+      }),
+    );
+  for (const cl of classes)
+    await sql`INSERT INTO class_enrollments(class_id,student_id,joined_at)
+    VALUES(${cl.id},${students[0].id},'2019-12-01T00:00:00+08:00')`.execute(db);
+  await sql`INSERT INTO class_enrollments(class_id,student_id,joined_at,left_at)
+    VALUES(${classes[0].id},${students[1].id},'2019-12-01T00:00:00+08:00','2020-01-02T00:00:00+08:00')`.execute(
+    db,
+  );
+  await sql`INSERT INTO class_enrollments(class_id,student_id,joined_at)
+    VALUES(${classes[0].id},${students[2].id},now())`.execute(db);
+  const first = await session(classes[0], {
+    starts_at: '2020-01-01T09:00:00+08:00',
+    ends_at: '2020-01-01T10:00:00+08:00',
+  });
+  await session(classes[1], {
+    starts_at: '2020-01-01T11:00:00+08:00',
+    ends_at: '2020-01-01T12:00:00+08:00',
+  });
+  await session(classes[0], {
+    starts_at: '2020-01-03T09:00:00+08:00',
+    ends_at: '2020-01-03T10:00:00+08:00',
+  });
+  await session(classes[2], {
+    starts_at: '2020-01-03T11:00:00+08:00',
+    ends_at: '2020-01-03T12:00:00+08:00',
+  });
+  await session(classes[0], {
+    starts_at: '2099-01-01T09:00:00+08:00',
+    ends_at: '2099-01-01T10:00:00+08:00',
+  });
+  assert.equal((await record(first, students[0], 'present')).statusCode, 200);
+  assert.equal((await record(first, students[1], 'absent', 0, adminCookie)).statusCode, 200);
+
+  const scope = `course_id=${reportCourse.id}`;
+  const path = `/reports/attendance?${scope}`;
+  const all = await ok('GET', path);
+  assert.equal(all.summary.expected, 5); // Unassigned classes remain in the overall report.
+  assert.equal(all.groups.length, 3);
+  assert.equal(all.teachers.length, 2);
+  for (const row of all.teachers) {
+    assert.equal(row.classes, 2);
+    assert.equal(row.students, 2); // One student attends both classes; withdrawn students remain in history.
+    assert.equal(row.sessions, 3);
+    assert.equal(row.expected, 4);
+    assert.equal(row.present, 1);
+    assert.equal(row.absent, 1); // Includes attendance entered by an administrator.
+    assert.equal(row.unrecorded, 2);
+    assert.equal(row.attendance_rate, 25);
+    assert.equal(row.recording_rate, 50);
+  }
+  for (const teacher of [home, subject]) {
+    const filtered = await ok(
+      'GET',
+      `${path}&teacher_id=${teacher.id}&teacher_role=${teacher.role}&page_size=1`,
+    );
+    assert.equal(filtered.total, 4);
+    assert.equal(filtered.items.length, 1);
+    assert.equal(filtered.groups.length, 2);
+    assert.equal(filtered.summary.expected, 4);
+    assert.equal(filtered.teachers.length, 1);
+    assert.equal(filtered.teachers[0].teacher_id, teacher.id);
+    const byRole = await ok('GET', `${path}&teacher_role=${teacher.role}`);
+    assert.equal(byRole.summary.expected, 4);
+    assert.equal(byRole.teachers.length, 1);
+    const exported = await request(
+      'GET',
+      `/reports/attendance.csv?${scope}&teacher_id=${teacher.id}&page_size=1`,
+    );
+    assert.equal(exported.statusCode, 200);
+    assert.equal(exported.body.trim().split('\r\n').length, 5);
+    assert.ok(exported.body.includes('班主任（当前归属）'));
+    assert.ok(exported.body.includes(classes[1].name));
+    assert.ok(!exported.body.includes(classes[2].name));
+    const summaryCsv = await request(
+      'GET',
+      `/reports/attendance/teachers.csv?${scope}&teacher_id=${teacher.id}&page_size=1`,
+    );
+    assert.equal(summaryCsv.statusCode, 200);
+    assert.equal(summaryCsv.body.trim().split('\r\n').length, 2);
+    assert.ok(summaryCsv.body.includes('"50%"'));
+  }
+  const campus = await ok('GET', `${path}&teacher_id=${home.id}&campus_id=${campus1.id}`);
+  assert.equal(campus.summary.expected, 3);
+  assert.equal(campus.teachers[0].classes, 1);
+  assert.equal(campus.teachers[0].recording_rate, 66.7);
+  const dated = await ok('GET', `${path}&teacher_id=${home.id}&from=2020-01-03&to=2020-01-03`);
+  assert.equal(dated.total, 1);
+  assert.equal(dated.summary.unrecorded, 1);
+  const searched = await ok(
+    'GET',
+    `${path}&teacher_id=${home.id}&q=${encodeURIComponent(students[1].name)}`,
+  );
+  assert.equal(searched.total, 1);
+  assert.equal(searched.teachers[0].absent, 1);
+  for (const suffix of [
+    `teacher_id=${home.id}&teacher_role=subject_teacher`,
+    `teacher_id=${outsider.id}`,
+    'from=2099-01-01',
+  ]) {
+    const empty = await ok('GET', `${path}&${suffix}`);
+    assert.equal(empty.total, 0);
+    assert.equal(empty.summary.recording_rate, null);
+    assert.deepEqual(empty.teachers, []);
+  }
+  for (const endpoint of [
+    '/reports/attendance',
+    '/reports/attendance.csv',
+    '/reports/attendance/teachers.csv',
+  ]) {
+    assert.equal((await request('GET', `${endpoint}?teacher_role=admin`)).statusCode, 400);
+    assert.equal((await request('GET', `${endpoint}?teacher_id=invalid`)).statusCode, 400);
+    const denied = await request(
+      'GET',
+      `${endpoint}?${scope}&teacher_id=${home.id}`,
+      undefined,
+      outsiderCookie,
+    );
+    assert.equal(denied.statusCode, 200);
+    if (endpoint.endsWith('.csv')) assert.equal(denied.body.trim().split('\r\n').length, 1);
+    else assert.deepEqual(denied.json().teachers, []);
+  }
+  assert.deepEqual((await ok('GET', '/lookups', undefined, outsiderCookie)).teachers, []);
+  await ok('PUT', `/classes/${classes[1].id}/teachers`, {
+    role: 'subject_teacher',
+    user_id: outsider.id,
+  });
+  const reassigned = await ok('GET', `${path}&teacher_id=${subject.id}`);
+  assert.equal(reassigned.summary.expected, 3);
+  const visible = await ok('GET', `${path}&teacher_id=${home.id}`, undefined, subjectCookie);
+  assert.equal(visible.summary.expected, 3);
+  assert.equal(visible.teachers[0].classes, 1);
+  const visibleCsv = await request(
+    'GET',
+    `/reports/attendance.csv?${scope}&teacher_id=${home.id}`,
+    undefined,
+    subjectCookie,
+  );
+  assert.ok(!visibleCsv.body.includes(classes[1].name));
+  const teacherCsv = await request(
+    'GET',
+    `/reports/attendance/teachers.csv?${scope}&teacher_id=${home.id}`,
+    undefined,
+    subjectCookie,
+  );
+  assert.ok(teacherCsv.body.includes('"66.7%"'));
+  const options = await ok('GET', '/lookups', undefined, subjectCookie);
+  assert.ok(!options.teachers.some((t: Json) => t.id === outsider.id));
+});
+
 test('移除班级关联立即撤销权限；禁用及重置密码撤销会话', async () => {
   await ok('PUT', `/classes/${class1.id}/teachers`, { role: 'subject_teacher', user_id: null });
   assert.equal(

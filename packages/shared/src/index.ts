@@ -89,6 +89,11 @@ export const listQuerySchema = z
     path: ['to'],
   });
 export type ListQuery = z.infer<typeof listQuerySchema>;
+export const reportQuerySchema = listQuerySchema.safeExtend({
+  teacher_id: id.optional(),
+  teacher_role: teacherRole.optional(),
+});
+export type ReportQuery = z.infer<typeof reportQuerySchema>;
 export type User = {
   id: string;
   username: string;

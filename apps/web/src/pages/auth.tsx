@@ -98,7 +98,7 @@ export function Login() {
           </div>
         </div>
         <div class="story-footer">
-          QINGHE ATTENDANCE <span>为成长，留一份记录。</span>
+          MM-NOI ATTENDANCE <span>为成长，留一份记录。</span>
         </div>
       </section>
       <section class="login-panel">
@@ -164,7 +164,7 @@ export function Login() {
           </div>
           <div class="login-support">无法登录？请联系系统管理员。</div>
         </form>
-        <div class="login-copyright">麦卡麦学员考勤 · 让管理更有温度</div>
+        <div class="login-copyright">麦卡麦可学员考勤 · 让管理更有温度</div>
       </section>
     </div>
   );

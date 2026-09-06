@@ -165,7 +165,47 @@ test('管理员建档排课 → 教师首次改密 → 课后考勤、更正、�
   await expect(page.getByRole('cell', { name: new RegExp(student) })).toHaveCount(2);
   await go(page, '考勤报表');
   await page.getByRole('combobox', { name: '校区筛选' }).selectOption({ label: campus });
-  await page.getByRole('button', { name: /逐人明细/ }).click();
+  await page.getByRole('button', { name: /^教师汇总/ }).click();
+  const teacherRow = page.getByRole('row').filter({ hasText: teacher });
+  await expect(teacherRow).toBeVisible();
+  await expect(teacherRow).toContainText('100%');
+  await expect(page.getByRole('columnheader', { name: '录入完成率', exact: true })).toBeVisible();
+  const summaryDownloading = page.waitForEvent('download');
+  await page.getByRole('button', { name: '导出教师汇总', exact: true }).click();
+  const summaryFile = await summaryDownloading;
+  const summaryStream = await summaryFile.createReadStream();
+  const summaryChunks: Buffer[] = [];
+  if (summaryStream)
+    for await (const chunk of summaryStream) summaryChunks.push(Buffer.from(chunk));
+  const summaryContents = Buffer.concat(summaryChunks).toString('utf8');
+  expect(summaryContents).toContain(teacher);
+  expect(summaryContents).toContain('录入完成率');
+  expect(summaryContents).toContain('100%');
+  await page.getByRole('button', { name: '关闭提示' }).evaluateAll((buttons) => {
+    for (const button of buttons) (button as HTMLButtonElement).click();
+  });
+  await page.screenshot({
+    path: testInfo.outputPath('teacher-report-desktop.png'),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole('navigation', { name: '主导航' })).not.toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath('teacher-report-mobile.png'),
+    fullPage: true,
+    animations: 'disabled',
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await teacherRow.getByRole('button', { name: '查看学员明细' }).click();
+  await expect(page.getByRole('combobox', { name: '教师角色筛选' })).toHaveValue(
+    'homeroom_teacher',
+  );
+  await expect(
+    page.getByRole('combobox', { name: '归属教师筛选' }).locator('option:checked'),
+  ).toContainText(teacher);
   await expect(page.getByRole('cell', { name: new RegExp(student) })).toBeVisible();
   const downloading = page.waitForEvent('download');
   await page.getByRole('button', { name: '导出 CSV' }).click();
@@ -176,6 +216,12 @@ test('管理员建档排课 → 教师首次改密 → 课后考勤、更正、�
   const contents = Buffer.concat(chunks).toString('utf8');
   expect(contents).toContain(student);
   expect(contents).toContain('缺勤');
+  expect(contents).toContain(teacher);
+  await page.getByRole('combobox', { name: '教师角色筛选' }).selectOption('subject_teacher');
+  await expect(page.getByRole('combobox', { name: '归属教师筛选' })).toHaveValue('');
+  await expect(page.getByText('暂无考勤明细', { exact: true })).toBeVisible();
+  await page.getByRole('combobox', { name: '教师角色筛选' }).selectOption('');
+  await expect(page.getByRole('cell', { name: new RegExp(student) })).toBeVisible();
   await go(page, '每周预警');
   await expect(page.getByRole('cell', { name: student, exact: true })).toBeVisible();
   await go(page, '工作台');

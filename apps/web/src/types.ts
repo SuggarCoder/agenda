@@ -100,6 +100,13 @@ export interface Measures {
   students: number;
   sessions: number;
   attendance_rate: number | null;
+  recording_rate: number | null;
+}
+export interface TeacherReportGroup extends Measures {
+  teacher_id: string;
+  teacher_name: string;
+  teacher_role: Exclude<Role, 'admin'>;
+  classes: number;
 }
 export interface ReportGroup extends Measures {
   class_id: string;
@@ -109,6 +116,8 @@ export interface ReportGroup extends Measures {
   course_name: string;
 }
 export interface ReportRow {
+  homeroom_name: string | null;
+  subject_name: string | null;
   session_id: string;
   student_id: string;
   student_name: string;

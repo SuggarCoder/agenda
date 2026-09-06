@@ -1,18 +1,37 @@
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
-import { listQuerySchema, type ListQuery, type User } from '@agenda/shared';
+import {
+  listQuerySchema,
+  reportQuerySchema,
+  roleLabels,
+  type ListQuery,
+  type ReportQuery,
+  type User,
+} from '@agenda/shared';
 import type { Db } from './db/index.js';
 import { actor, filters, and, classScope, paginate, csv, type Row } from './helpers.js';
 import { sessionsQuery } from './attendance.js';
 
 const weekStart = sql`(date_trunc('week', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai')`;
-function expectedQuery(user: User, q: ListQuery) {
+function teacherFilters(q: ReportQuery) {
+  const where = [];
+  if (q.teacher_id) where.push(sql`ct.user_id=${q.teacher_id}`);
+  if (q.teacher_role) where.push(sql`ct.role=${q.teacher_role}`);
+  return and(where);
+}
+function expectedQuery(user: User, q: ReportQuery) {
   const where = filters(q, user);
+  if (q.teacher_id || q.teacher_role)
+    where.push(
+      sql`EXISTS(SELECT 1 FROM class_teachers ct WHERE ct.class_id=c.id AND ${teacherFilters(q)})`,
+    );
   where.push(sql`s.ends_at<=now()`);
   if (q.student_id) where.push(sql`st.id=${q.student_id}`);
   if (q.q) where.push(sql`(st.name ILIKE ${`%${q.q}%`} OR c.name ILIKE ${`%${q.q}%`})`);
   return sql`SELECT s.id session_id, s.starts_at, s.ends_at, c.id class_id, c.name class_name, ca.id campus_id, ca.name campus_name,
     co.id course_id, co.name course_name, st.id student_id, st.name student_name, st.phone,
+    (SELECT u.name FROM class_teachers ct JOIN users u ON u.id=ct.user_id WHERE ct.class_id=c.id AND ct.role='homeroom_teacher') homeroom_name,
+    (SELECT u.name FROM class_teachers ct JOIN users u ON u.id=ct.user_id WHERE ct.class_id=c.id AND ct.role='subject_teacher') subject_name,
     r.status, r.version, r.updated_at, u.name updated_by_name
     FROM attendance_sessions s JOIN classes c ON c.id=s.class_id JOIN campuses ca ON ca.id=c.campus_id JOIN courses co ON co.id=c.course_id
     JOIN class_enrollments e ON e.class_id=s.class_id AND e.joined_at<=s.starts_at AND (e.left_at IS NULL OR e.left_at>s.starts_at)
@@ -22,7 +41,16 @@ function expectedQuery(user: User, q: ListQuery) {
 const measures = sql`count(*)::int expected, (count(*) FILTER(WHERE status='present'))::int present,
   (count(*) FILTER(WHERE status='absent'))::int absent, (count(*) FILTER(WHERE status IS NULL))::int unrecorded,
   count(DISTINCT student_id)::int students, count(DISTINCT session_id)::int sessions,
-  CASE WHEN count(*)=0 THEN NULL ELSE round(100.0 * count(*) FILTER(WHERE status='present') / count(*), 1)::float8 END attendance_rate`;
+  CASE WHEN count(*)=0 THEN NULL ELSE round(100.0 * count(*) FILTER(WHERE status='present') / count(*), 1)::float8 END attendance_rate,
+  CASE WHEN count(*)=0 THEN NULL ELSE round(100.0 * count(status) / count(*), 1)::float8 END recording_rate`;
+function teacherGroupsQuery(user: User, q: ReportQuery) {
+  return sql<Row>`WITH expected AS (${expectedQuery(user, q)})
+    SELECT ct.user_id teacher_id, u.name teacher_name, ct.role teacher_role,
+      count(DISTINCT class_id)::int classes, ${measures}
+    FROM expected e JOIN class_teachers ct USING(class_id) JOIN users u ON u.id=ct.user_id
+    WHERE ${teacherFilters(q)}
+    GROUP BY ct.user_id,u.name,ct.role ORDER BY ct.role,u.name,ct.user_id`;
+}
 export function warningsQuery(user: User, q: ListQuery) {
   const visible = [
     classScope(user),
@@ -46,7 +74,7 @@ export function warningsQuery(user: User, q: ListQuery) {
 }
 export function registerReports(app: FastifyInstance, db: Db) {
   app.get('/api/reports/attendance', async (req) => {
-    const q = listQuerySchema.parse(req.query);
+    const q = reportQuerySchema.parse(req.query);
     const expected = expectedQuery(actor(req), q);
     const summary =
       await sql<Row>`WITH expected AS (${expected}) SELECT ${measures} FROM expected`.execute(db);
@@ -60,10 +88,48 @@ export function registerReports(app: FastifyInstance, db: Db) {
       sql`${expected} ORDER BY s.starts_at DESC, c.name, st.name, s.id, st.id`,
       q,
     );
-    return { summary: summary.rows[0], groups: groups.rows, ...details };
+    const teachers = await teacherGroupsQuery(actor(req), q).execute(db);
+    return { summary: summary.rows[0], groups: groups.rows, teachers: teachers.rows, ...details };
+  });
+  app.get('/api/reports/attendance/teachers.csv', async (req, reply) => {
+    const q = reportQuerySchema.parse(req.query);
+    const result = await teacherGroupsQuery(actor(req), q).execute(db);
+    reply
+      .type('text/csv; charset=utf-8')
+      .header('Content-Disposition', 'attachment; filename="attendance-teachers.csv"');
+    return csv(
+      [
+        '教师',
+        '角色',
+        '班级数',
+        '学员数（去重）',
+        '时段数',
+        '应到人次',
+        '实到人次',
+        '缺勤人次',
+        '未录入人次',
+        '出勤率',
+        '录入完成率',
+        '归属口径',
+      ],
+      result.rows.map((r) => [
+        r.teacher_name,
+        roleLabels[r.teacher_role as 'homeroom_teacher' | 'subject_teacher'],
+        r.classes,
+        r.students,
+        r.sessions,
+        r.expected,
+        r.present,
+        r.absent,
+        r.unrecorded,
+        r.attendance_rate === null ? '' : `${r.attendance_rate}%`,
+        r.recording_rate === null ? '' : `${r.recording_rate}%`,
+        '按当前班级教师分配，仅统计可见班级的已结束时段',
+      ]),
+    );
   });
   app.get('/api/reports/attendance.csv', async (req, reply) => {
-    const q = listQuerySchema.parse(req.query);
+    const q = reportQuerySchema.parse(req.query);
     const result =
       await sql<Row>`${expectedQuery(actor(req), q)} ORDER BY s.starts_at DESC, c.name, st.name, s.id, st.id`.execute(
         db,
@@ -76,6 +142,8 @@ export function registerReports(app: FastifyInstance, db: Db) {
         '校区',
         '课程',
         '班级',
+        '班主任（当前归属）',
+        '任课老师（当前归属）',
         '开始时间（北京时间）',
         '结束时间（北京时间）',
         '学员',
@@ -88,6 +156,8 @@ export function registerReports(app: FastifyInstance, db: Db) {
         r.campus_name,
         r.course_name,
         r.class_name,
+        r.homeroom_name,
+        r.subject_name,
         r.starts_at,
         r.ends_at,
         r.student_name,
